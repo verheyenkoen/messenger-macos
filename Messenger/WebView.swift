@@ -204,6 +204,57 @@ struct WebView: NSViewRepresentable {
             decisionHandler(.allow)
         }
 
+        // MARK: - Post-Auth Redirect Detection
+
+        private var hasRedirectedAfterAuth = false
+        private var wasOnLoginPage = false
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            guard let url = webView.url,
+                  let host = url.host else { return }
+
+            #if DEBUG
+            print("[Nav] Page loaded: \(url.absoluteString)")
+            #endif
+
+            // Ignore messenger.com
+            if host.contains("messenger.com") {
+                hasRedirectedAfterAuth = false
+                wasOnLoginPage = false
+                return
+            }
+
+            // facebook.com/messages is the goal
+            if host.contains("facebook.com") && url.path.lowercased().hasPrefix("/messages") {
+                hasRedirectedAfterAuth = false
+                wasOnLoginPage = false
+                return
+            }
+
+            // Only handle facebook.com
+            guard host.contains("facebook.com") else { return }
+
+            let path = url.path.lowercased()
+
+            // Track if we're on a login page
+            let isLoginPage = path.contains("login") || path.contains("two_step") || path.contains("checkpoint")
+
+            if isLoginPage {
+                wasOnLoginPage = true
+                return
+            }
+
+            // If we just came from login and landed on homepage, redirect to messages
+            if wasOnLoginPage && !hasRedirectedAfterAuth && (path == "/" || path.isEmpty) {
+                #if DEBUG
+                print("[Nav] Redirecting from homepage to messages after login")
+                #endif
+                hasRedirectedAfterAuth = true
+                wasOnLoginPage = false
+                webView.load(URLRequest(url: URL(string: "https://www.facebook.com/messages")!))
+            }
+        }
+
         // MARK: - WKUIDelegate (File Upload)
 
         func webView(_ webView: WKWebView,
