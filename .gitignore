@@ -20,3 +20,4 @@ Pods/
 # Swift Package Manager
 .build/
 .swiftpm/
+GEMINI.md

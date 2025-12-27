@@ -1,35 +1,55 @@
 # Messenger for macOS
 
-A lightweight native macOS wrapper for Facebook Messenger web, providing a seamless desktop experience with native notifications and system integration.
+A lightweight native macOS wrapper for Facebook Messenger. The goal is simple: provide a clean, native desktop experience for Messenger without the bloat of Electron-based apps.
 
 ![macOS](https://img.shields.io/badge/macOS-13.0+-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
+## Why?
+
+- **Lightweight** - Uses native WKWebView instead of bundling an entire Chromium browser
+- **Fast startup** - Launches instantly, no heavy framework to load
+- **Low memory** - Uses significantly less RAM than Electron alternatives
+- **Native integration** - Real macOS notifications, menu bar icon, dock badge
+
 ## Features
 
-- **Native macOS App** - Clean wrapper using WKWebView, no Electron bloat
-- **Smart Notifications** - Shows sender name and message preview in notifications
+### Messaging
+- **Native Notifications** - Shows sender name and message preview
 - **Filter Groups & Pages** - Option to filter out notifications from groups and pages
 - **Menu Bar Icon** - Quick access with unread badge counter
 - **Dock Badge** - Shows unread message count
 - **Dark/Light Mode** - Automatically syncs with macOS appearance
 - **Do Not Disturb** - Respects macOS Focus mode
-- **Video Calls** - Popup windows for video/audio calls
+
+### Calls (Video & Audio)
+
+> **Note:** Facebook/Meta blocks WebRTC in WKWebView, so video and audio calls cannot work directly in the app.
+
+**Workaround:** When you're in a conversation, a floating button appears that opens the conversation in Chrome (or your default browser), where calls work normally.
+
+- Floating call button in conversations
+- "Accept in Chrome" button for incoming calls
+- Configurable: Chrome or default browser (Menu Bar → right-click → "Open calls in Chrome")
+
+### Files & Media
 - **File Uploads** - Native file picker for attachments
 - **Downloads** - Save files with native save dialog
+
+### Window Management
 - **Window Position** - Remembers window size and position
 - **Always on Top** - Optional floating window mode
-- **Localization** - English and Czech language support
+- **Hide to Menu Bar** - Close window, app keeps running
 
-## Screenshots
-
-*Coming soon*
+### Localization
+- English and Czech language support
 
 ## Requirements
 
 - macOS 13.0 (Ventura) or later
-- Xcode 15.0+ (for building)
+- Google Chrome (recommended for video/audio calls)
+- Xcode 15.0+ (for building from source)
 
 ## Installation
 
@@ -70,6 +90,15 @@ xcodebuild -project Messenger.xcodeproj -scheme Messenger -configuration Release
 | `Cmd + W` | Hide window |
 | `Cmd + Shift + O` | Show window |
 | `Cmd + Shift + T` | Toggle always on top |
+
+### Menu Bar Options (Right-click)
+
+- **Open Messenger** - Show the main window
+- **New Message** - Start a new conversation
+- **Always on Top** - Toggle floating window
+- **Filter Groups & Pages** - Toggle notification filtering
+- **Open calls in Chrome** - Toggle Chrome for calls (default: on)
+- **Quit** - Exit the app
 
 ## Privacy
 
