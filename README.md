@@ -6,6 +6,16 @@ A lightweight native macOS wrapper for Facebook Messenger. The goal is simple: p
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
+## Quick Alternative
+
+If you just want Messenger as a standalone app without building anything:
+
+1. Open [messenger.com](https://www.messenger.com) in **Google Chrome** (Safari doesn't support this)
+2. Click the three dots menu (⋮) → **Save and Share** → **Install page as app...**
+3. Done! Messenger will now open as a standalone app
+
+This native app offers additional features like menu bar icon, dock badge, and notification filtering.
+
 ## Why?
 
 - **Lightweight** - Uses native WKWebView instead of bundling an entire Chromium browser
