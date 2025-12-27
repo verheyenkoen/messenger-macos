@@ -6,9 +6,32 @@ import WebKit
 class NotificationManager: NSObject, ObservableObject {
     static let shared = NotificationManager()
 
+    private static let incomingCallCategoryId = "INCOMING_CALL"
+    private static let acceptCallActionId = "ACCEPT_CALL"
+
+    private var callDismissWorkItem: DispatchWorkItem?
+
     private override init() {
         super.init()
         UNUserNotificationCenter.current().delegate = self
+        registerNotificationCategories()
+    }
+
+    private func registerNotificationCategories() {
+        let acceptAction = UNNotificationAction(
+            identifier: Self.acceptCallActionId,
+            title: String(localized: "call.acceptInChrome"),
+            options: [.foreground]
+        )
+
+        let callCategory = UNNotificationCategory(
+            identifier: Self.incomingCallCategoryId,
+            actions: [acceptAction],
+            intentIdentifiers: [],
+            options: []
+        )
+
+        UNUserNotificationCenter.current().setNotificationCategories([callCategory])
     }
 
     func requestAuthorization() {
@@ -26,14 +49,23 @@ class NotificationManager: NSObject, ObservableObject {
         guard UserDefaults.standard.bool(forKey: "filterGroupsAndPages") else {
             return false
         }
-        
+
         // 1. Known bots/pages/system messages
         let blockedNames = ["Messenger"]
         if blockedNames.contains(where: { name.contains($0) }) {
             return true
         }
-        
+
         return false
+    }
+
+    /// Check if notification indicates an incoming call
+    private func isIncomingCall(title: String, body: String) -> Bool {
+        let keywordsString = String(localized: "call.keywords")
+        let keywords = keywordsString.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+
+        let combinedText = "\(title) \(body)".lowercased()
+        return keywords.contains { combinedText.contains($0) }
     }
 
     func showNotification(title: String, body: String, conversationId: String? = nil) {
@@ -63,7 +95,7 @@ class NotificationManager: NSObject, ObservableObject {
                 #endif
                 return
             }
-            
+
             // Check filter using shared logic
             if self.isSenderBlocked(title) {
                 #if DEBUG
@@ -71,7 +103,7 @@ class NotificationManager: NSObject, ObservableObject {
                 #endif
                 return
             }
-            
+
             #if DEBUG
             print("[Notification] Passed filter: \(title)")
             #endif
@@ -81,8 +113,26 @@ class NotificationManager: NSObject, ObservableObject {
             content.body = body
             content.sound = .default
 
+            // Check if this is an incoming call
+            let isCall = self.isIncomingCall(title: title, body: body)
+
+            if isCall {
+                content.categoryIdentifier = Self.incomingCallCategoryId
+
+                // Set in-app accept button state
+                if let conversationId = conversationId {
+                    DispatchQueue.main.async {
+                        self.setIncomingCall(conversationId: conversationId)
+                    }
+                }
+
+                #if DEBUG
+                print("[Notification] Incoming call detected from: \(title)")
+                #endif
+            }
+
             if let conversationId = conversationId {
-                content.userInfo = ["conversationId": conversationId]
+                content.userInfo = ["conversationId": conversationId, "isCall": isCall]
             }
 
             let request = UNNotificationRequest(
@@ -104,6 +154,25 @@ class NotificationManager: NSObject, ObservableObject {
             }
         }
     }
+
+    /// Set incoming call state with auto-dismiss after 60 seconds
+    private func setIncomingCall(conversationId: String) {
+        // Cancel any previous dismiss timer
+        callDismissWorkItem?.cancel()
+
+        // Set the incoming call conversation ID
+        WebViewStore.shared.incomingCallConversationID = conversationId
+
+        // Auto-dismiss after 60 seconds (call likely ended or went to voicemail)
+        let workItem = DispatchWorkItem { [weak self] in
+            WebViewStore.shared.dismissIncomingCall()
+            #if DEBUG
+            print("[Notification] Auto-dismissed incoming call after 60s")
+            #endif
+        }
+        callDismissWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60, execute: workItem)
+    }
 }
 
 extension NotificationManager: UNUserNotificationCenterDelegate {
@@ -116,16 +185,28 @@ extension NotificationManager: UNUserNotificationCenterDelegate {
         completionHandler([.banner, .sound])
     }
 
-    // Handle notification click
+    // Handle notification click or action
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
-        // Show window
+        let userInfo = response.notification.request.content.userInfo
+        let conversationId = userInfo["conversationId"] as? String
+
+        // Handle "Accept in Chrome" action
+        if response.actionIdentifier == Self.acceptCallActionId {
+            if let conversationId = conversationId {
+                WebViewStore.shared.incomingCallConversationID = conversationId
+                WebViewStore.shared.acceptCallInChrome()
+            }
+            completionHandler()
+            return
+        }
+
+        // Default action (notification tap) - show window and open conversation
         if let window = NSApp.windows.first(where: { !$0.className.contains("NSStatusBar") }) {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
         }
 
-        // If we have conversationId, open specific conversation
-        if let conversationId = response.notification.request.content.userInfo["conversationId"] as? String {
+        if let conversationId = conversationId {
             openConversation(id: conversationId)
         }
 

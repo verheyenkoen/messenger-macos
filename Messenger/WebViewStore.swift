@@ -1,10 +1,43 @@
 import WebKit
 import Combine
+import AppKit
 
 class WebViewStore: ObservableObject {
     static let shared = WebViewStore()
 
     weak var webView: WKWebView?
+    @Published var currentURL: URL?
+    @Published var incomingCallConversationID: String?
+
+    /// Returns true if currently viewing a conversation
+    var isInConversation: Bool {
+        // Use live URL from webView, fall back to cached
+        guard let url = (webView?.url ?? currentURL)?.absoluteString else { return false }
+        return url.contains("/t/") || url.contains("/e2ee/t/")
+    }
+
+    /// Returns true if there's an incoming call waiting
+    var hasIncomingCall: Bool {
+        incomingCallConversationID != nil
+    }
+
+    /// Extract conversation ID from current URL
+    var currentConversationID: String? {
+        // Use live URL from webView, fall back to cached
+        guard let url = (webView?.url ?? currentURL)?.absoluteString else { return nil }
+        if let range = url.range(of: "/t/") {
+            let afterT = url[range.upperBound...]
+            // Handle query params or trailing slashes
+            if let endRange = afterT.range(of: "/") {
+                return String(afterT[..<endRange.lowerBound])
+            }
+            if let queryRange = afterT.range(of: "?") {
+                return String(afterT[..<queryRange.lowerBound])
+            }
+            return String(afterT)
+        }
+        return nil
+    }
 
     private init() {
         // Listen for new message notification from menu bar
@@ -85,5 +118,52 @@ class WebViewStore: ObservableObject {
         })()
         """
         webView?.evaluateJavaScript(js, completionHandler: nil)
+    }
+
+    // MARK: - External browser integration
+
+    /// Open current conversation in external browser for video calls
+    func openInChrome() {
+        guard let conversationID = currentConversationID else { return }
+        openConversationInBrowser(conversationID)
+    }
+
+    /// Accept incoming call by opening conversation in external browser
+    func acceptCallInChrome() {
+        guard let conversationID = incomingCallConversationID else { return }
+        openConversationInBrowser(conversationID)
+        DispatchQueue.main.async {
+            self.incomingCallConversationID = nil
+        }
+    }
+
+    /// Dismiss incoming call notification
+    func dismissIncomingCall() {
+        incomingCallConversationID = nil
+    }
+
+    private func openConversationInBrowser(_ conversationID: String) {
+        let urlString = "https://www.facebook.com/messages/t/\(conversationID)"
+        guard let url = URL(string: urlString) else { return }
+
+        // Ensure default is set (in case user clicks before opening menu)
+        if !UserDefaults.standard.bool(forKey: "openCallsInChromeSet") {
+            UserDefaults.standard.set(true, forKey: "openCallsInChrome")
+            UserDefaults.standard.set(true, forKey: "openCallsInChromeSet")
+        }
+
+        let useChrome = UserDefaults.standard.bool(forKey: "openCallsInChrome")
+
+        if useChrome {
+            NSWorkspace.shared.open(
+                [url],
+                withAppBundleIdentifier: "com.google.Chrome",
+                options: [],
+                additionalEventParamDescriptor: nil,
+                launchIdentifiers: nil
+            )
+        } else {
+            NSWorkspace.shared.open(url)
+        }
     }
 }

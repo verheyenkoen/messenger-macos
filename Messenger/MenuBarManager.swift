@@ -31,6 +31,7 @@ class MenuBarManager: NSObject, ObservableObject {
 
     private var floatingMenuItem: NSMenuItem?
     private var filterMenuItem: NSMenuItem?
+    private var openInChromeMenuItem: NSMenuItem?
     private var contextMenu: NSMenu?
 
     private func setupMenu() {
@@ -46,6 +47,9 @@ class MenuBarManager: NSObject, ObservableObject {
         
         filterMenuItem = NSMenuItem(title: String(localized: "menu.filterMessages"), action: #selector(toggleFilter), keyEquivalent: "")
         menu.addItem(filterMenuItem!)
+
+        openInChromeMenuItem = NSMenuItem(title: String(localized: "menu.openInChrome"), action: #selector(toggleOpenInChrome), keyEquivalent: "")
+        menu.addItem(openInChromeMenuItem!)
 
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: String(localized: "menu.quit"), action: #selector(quit), keyEquivalent: "q"))
@@ -67,6 +71,13 @@ class MenuBarManager: NSObject, ObservableObject {
         UserDefaults.standard.set(!current, forKey: key)
         // State update handled in menuWillOpen, but we can update immediately too
         filterMenuItem?.state = !current ? .on : .off
+    }
+
+    @objc private func toggleOpenInChrome() {
+        let key = "openCallsInChrome"
+        let current = UserDefaults.standard.bool(forKey: key)
+        UserDefaults.standard.set(!current, forKey: key)
+        openInChromeMenuItem?.state = !current ? .on : .off
     }
 
     private func updateIcon() {
@@ -211,8 +222,15 @@ extension MenuBarManager: NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         // Update checkmark for "Always on top"
         floatingMenuItem?.state = WindowManager.shared.isFloating ? .on : .off
-        
+
         // Update checkmark for "Filter Messages"
         filterMenuItem?.state = UserDefaults.standard.bool(forKey: "filterGroupsAndPages") ? .on : .off
+
+        // Set default for "Open in Chrome" on first run, then update checkmark
+        if !UserDefaults.standard.bool(forKey: "openCallsInChromeSet") {
+            UserDefaults.standard.set(true, forKey: "openCallsInChrome")
+            UserDefaults.standard.set(true, forKey: "openCallsInChromeSet")
+        }
+        openInChromeMenuItem?.state = UserDefaults.standard.bool(forKey: "openCallsInChrome") ? .on : .off
     }
 }

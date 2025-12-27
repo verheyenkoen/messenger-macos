@@ -45,6 +45,9 @@ struct WebView: NSViewRepresentable {
         // Observe title changes for badge
         context.coordinator.observeTitle(webView: webView)
 
+        // Observe URL changes for conversation tracking
+        context.coordinator.observeURL(webView: webView)
+
         // Observe system appearance changes for dark/light mode
         context.coordinator.observeAppearanceChanges(webView: webView)
 
@@ -264,16 +267,60 @@ struct WebView: NSViewRepresentable {
     
     class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
         private var titleObservation: NSKeyValueObservation?
+        private var urlObservation: NSKeyValueObservation?
         private var appearanceObservation: NSKeyValueObservation?
         private var lastUnreadCount: Int = 0
         private var lastBadgeValue: String? = nil
         private var pendingBadgeCount: Int? = nil
         private var lastNotifiedMessage: String? = nil
         private var popupWindows: [NSWindow] = []
+        private var lastCallAlertTitle: String? = nil  // Track to avoid duplicate call alerts
+        private var callResetTimer: DispatchWorkItem? = nil  // Timer to reset call tracking
 
         func observeTitle(webView: WKWebView) {
-            titleObservation = webView.observe(\.title, options: [.new]) { _, change in
-                self.updateBadge(from: change.newValue ?? "")
+            titleObservation = webView.observe(\.title, options: [.new]) { [weak self] _, change in
+                guard let self = self else { return }
+                // Flatten double-optional: String?? -> String?
+                let title: String? = change.newValue.flatMap { $0 }
+
+                // Check for incoming call in title (e.g. "Romča volá")
+                if let titleStr = title, self.isCallTitle(titleStr) {
+                    // Cancel any pending reset timer
+                    self.callResetTimer?.cancel()
+                    self.callResetTimer = nil
+
+                    // Only show alert once per call (avoid duplicates)
+                    if titleStr != self.lastCallAlertTitle {
+                        self.lastCallAlertTitle = titleStr
+                        print("[Call] Detected call from title: \(titleStr)")
+                        DispatchQueue.main.async {
+                            self.showCallAlert()
+                        }
+                    }
+                } else {
+                    // Schedule reset after 30 seconds of no call title
+                    // This prevents repeated alerts when title oscillates during a call
+                    self.callResetTimer?.cancel()
+                    let resetWork = DispatchWorkItem { [weak self] in
+                        self?.lastCallAlertTitle = nil
+                        print("[Call] Reset call tracking after timeout")
+                    }
+                    self.callResetTimer = resetWork
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: resetWork)
+                }
+
+                self.updateBadge(from: title)
+            }
+        }
+
+        func observeURL(webView: WKWebView) {
+            urlObservation = webView.observe(\.url, options: [.new]) { webView, _ in
+                DispatchQueue.main.async {
+                    WebViewStore.shared.currentURL = webView.url
+                    #if DEBUG
+                    print("[URL] URL changed to: \(webView.url?.absoluteString ?? "nil")")
+                    #endif
+                }
             }
         }
 
@@ -298,14 +345,24 @@ struct WebView: NSViewRepresentable {
                 #endif
                 return
             }
-            
+
             guard message.name == "notificationHandler",
                   let body = message.body as? [String: Any],
                   let title = body["title"] as? String else {
                 return
             }
-            
+
+            let notificationBody = body["body"] as? String ?? ""
             let tag = body["tag"] as? String
+
+            // 0. Check if this is a call notification - offer to open in browser
+            if isCallNotification(title: title, body: notificationBody) {
+                print("[Call] Detected call notification: \(title) - \(notificationBody)")
+                DispatchQueue.main.async {
+                    self.showCallAlert()
+                }
+                return  // Don't process as regular notification
+            }
 
             // 1. Handle "ignore_read" tag FIRST (from Bell notification detection)
             if tag == "ignore_read" {
@@ -338,8 +395,6 @@ struct WebView: NSViewRepresentable {
                 #endif
             }
 
-            let notificationBody = body["body"] as? String ?? ""
-            
             // 4. Duplicate Check
             // If the same sender and message content comes in again, suppress the notification
             // (This happens when bell notification triggers a re-scrape of an existing unread message)
@@ -476,6 +531,11 @@ struct WebView: NSViewRepresentable {
             guard let url = webView.url,
                   let host = url.host else { return }
 
+            // Update current URL for floating button visibility
+            DispatchQueue.main.async {
+                WebViewStore.shared.currentURL = url
+            }
+
             #if DEBUG
             print("[Nav] Page loaded: \(url.absoluteString)")
             #endif
@@ -533,14 +593,55 @@ struct WebView: NSViewRepresentable {
             }
         }
 
-        // MARK: - WKUIDelegate (Popup Windows for Video Calls)
+        // MARK: - WKUIDelegate (Popup Windows)
 
         func webView(_ webView: WKWebView,
                      createWebViewWith configuration: WKWebViewConfiguration,
                      for navigationAction: WKNavigationAction,
                      windowFeatures: WKWindowFeatures) -> WKWebView? {
 
-            // Create popup WebView
+            // ALWAYS log popup URL for debugging
+            let originalUrl = navigationAction.request.url?.absoluteString ?? "nil"
+            let urlLower = originalUrl.lowercased()
+            let decodedUrl = originalUrl.removingPercentEncoding ?? originalUrl
+            let decodedLower = decodedUrl.lowercased()
+
+            print("[Popup] ========== POPUP REQUEST ==========")
+            print("[Popup] Original URL: \(originalUrl)")
+            print("[Popup] Decoded URL: \(decodedUrl)")
+
+            // Check if this is a call-related popup or browser suggestion
+            // Direct call URLs
+            let isCallUrl = urlLower.contains("/calls/") ||
+                            urlLower.contains("/groupcall/") ||
+                            urlLower.contains("/call/") ||
+                            urlLower.contains("rtc") ||
+                            urlLower.contains("webrtc")
+
+            // Browser download suggestions (FB says "your browser doesn't support calls, download Safari/Chrome")
+            let isBrowserSuggestion = urlLower.contains("l.messenger.com") &&
+                                      (urlLower.contains("apple.com") || urlLower.contains("google.com"))
+
+            // Also check decoded URL
+            let isDecodedBrowserSuggestion = decodedLower.contains("l.messenger.com") &&
+                                              (decodedLower.contains("apple.com") || decodedLower.contains("google.com"))
+
+            print("[Popup] isCallUrl: \(isCallUrl)")
+            print("[Popup] isBrowserSuggestion: \(isBrowserSuggestion)")
+            print("[Popup] isDecodedBrowserSuggestion: \(isDecodedBrowserSuggestion)")
+            print("[Popup] =====================================")
+
+            if isCallUrl || isBrowserSuggestion || isDecodedBrowserSuggestion {
+                print("[Popup] >>> DETECTED AS CALL - showing alert")
+                DispatchQueue.main.async {
+                    self.showCallAlert()
+                }
+                return nil  // Don't create the broken popup
+            }
+
+            print("[Popup] >>> NOT detected as call - creating popup window")
+
+            // Normal popup - create WebView
             let popupWebView = WKWebView(frame: .zero, configuration: configuration)
             popupWebView.navigationDelegate = self
             popupWebView.uiDelegate = self
@@ -569,6 +670,50 @@ struct WebView: NSViewRepresentable {
             return popupWebView
         }
 
+        private func showCallAlert() {
+            let alert = NSAlert()
+            alert.messageText = String(localized: "call.detected")
+            alert.informativeText = String(localized: "call.openInBrowserQuestion")
+            alert.addButton(withTitle: String(localized: "call.openInBrowser"))
+            alert.addButton(withTitle: String(localized: "call.cancel"))
+            alert.alertStyle = .informational
+
+            if alert.runModal() == .alertFirstButtonReturn {
+                WebViewStore.shared.openInChrome()
+            }
+        }
+
+        /// Check if notification title/body indicates an incoming call
+        private func isCallNotification(title: String, body: String) -> Bool {
+            let callKeywordsString = String(localized: "call.keywords")
+            let callKeywords = callKeywordsString.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+
+            let titleLower = title.lowercased()
+            let bodyLower = body.lowercased()
+
+            for keyword in callKeywords {
+                if titleLower.contains(keyword) || bodyLower.contains(keyword) {
+                    return true
+                }
+            }
+            return false
+        }
+
+        /// Check if page title indicates an incoming call (e.g. "Name volá", "Name is calling")
+        private func isCallTitle(_ title: String) -> Bool {
+            let callKeywordsString = String(localized: "call.keywords")
+            let callKeywords = callKeywordsString.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+
+            let titleLower = title.lowercased()
+
+            for keyword in callKeywords {
+                if titleLower.contains(keyword) {
+                    return true
+                }
+            }
+            return false
+        }
+
         func webViewDidClose(_ webView: WKWebView) {
             if let window = webView.window {
                 window.close()
@@ -576,6 +721,28 @@ struct WebView: NSViewRepresentable {
                 #if DEBUG
                 print("[Popup] Closed popup window")
                 #endif
+            }
+        }
+
+        // MARK: - Media Capture (Camera/Microphone)
+
+        func webView(_ webView: WKWebView,
+                     requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+                     initiatedByFrame frame: WKFrameInfo,
+                     type: WKMediaCaptureType,
+                     decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+            let host = origin.host
+            // Auto-grant for Messenger and Facebook domains
+            if host.contains("messenger.com") || host.contains("facebook.com") {
+                #if DEBUG
+                print("[Media] Granting \(type) permission for \(host)")
+                #endif
+                decisionHandler(.grant)
+            } else {
+                #if DEBUG
+                print("[Media] Prompting for \(type) permission for \(host)")
+                #endif
+                decisionHandler(.prompt)
             }
         }
 
