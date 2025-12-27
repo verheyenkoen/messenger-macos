@@ -13,32 +13,68 @@ class NotificationManager: NSObject, ObservableObject {
 
     func requestAuthorization() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
+            #if DEBUG
             print("[Notification] Permission granted: \(granted)")
             if let error = error {
                 print("[Notification] Authorization error: \(error)")
             }
+            #endif
         }
     }
 
+    func isSenderBlocked(_ name: String) -> Bool {
+        guard UserDefaults.standard.bool(forKey: "filterGroupsAndPages") else {
+            return false
+        }
+        
+        // 1. Known bots/pages/system messages
+        let blockedNames = ["Messenger"]
+        if blockedNames.contains(where: { name.contains($0) }) {
+            return true
+        }
+        
+        return false
+    }
+
     func showNotification(title: String, body: String, conversationId: String? = nil) {
+        #if DEBUG
         print("[Notification] showNotification called - title: \(title), body: \(body)")
+        #endif
 
         // Check current permission status
         UNUserNotificationCenter.current().getNotificationSettings { settings in
+            #if DEBUG
             print("[Notification] Current authorization status: \(settings.authorizationStatus.rawValue)")
             print("[Notification] Alert setting: \(settings.alertSetting.rawValue)")
             print("[Notification] Sound setting: \(settings.soundSetting.rawValue)")
+            #endif
 
             guard settings.authorizationStatus == .authorized else {
+                #if DEBUG
                 print("[Notification] ERROR: Not authorized to show notifications!")
+                #endif
                 return
             }
 
             // Respect Focus/Do Not Disturb mode
             guard settings.alertSetting == .enabled else {
+                #if DEBUG
                 print("[Notification] Alerts disabled (Focus mode active)")
+                #endif
                 return
             }
+            
+            // Check filter using shared logic
+            if self.isSenderBlocked(title) {
+                #if DEBUG
+                print("[Notification] Filtered out blocked sender: \(title)")
+                #endif
+                return
+            }
+            
+            #if DEBUG
+            print("[Notification] Passed filter: \(title)")
+            #endif
 
             let content = UNMutableNotificationContent()
             content.title = title
@@ -57,9 +93,13 @@ class NotificationManager: NSObject, ObservableObject {
 
             UNUserNotificationCenter.current().add(request) { error in
                 if let error = error {
+                    #if DEBUG
                     print("[Notification] Failed to show notification: \(error)")
+                    #endif
                 } else {
+                    #if DEBUG
                     print("[Notification] Notification scheduled successfully")
+                    #endif
                 }
             }
         }
@@ -69,28 +109,11 @@ class NotificationManager: NSObject, ObservableObject {
 extension NotificationManager: UNUserNotificationCenterDelegate {
     // Show notification even when app is in foreground
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        #if DEBUG
         print("[Notification] willPresent called")
-
-        // Find main window (not status bar)
-        let mainWindow = NSApp.windows.first { window in
-            !window.className.contains("NSStatusBar") &&
-            !window.className.contains("PopUp") &&
-            window.contentView != nil
-        }
-
-        let isWindowVisible = mainWindow?.isVisible ?? false
-        let isAppActive = NSApp.isActive
-
-        print("[Notification] Main window visible: \(isWindowVisible), App active: \(isAppActive)")
-
-        // Show notification if window is not visible OR app is not active
-        if !isWindowVisible || !isAppActive {
-            print("[Notification] Showing banner notification")
-            completionHandler([.banner, .sound])
-        } else {
-            print("[Notification] Suppressing notification (window visible and app active)")
-            completionHandler([])
-        }
+        #endif
+        // Always show banner and sound, even if app is active
+        completionHandler([.banner, .sound])
     }
 
     // Handle notification click

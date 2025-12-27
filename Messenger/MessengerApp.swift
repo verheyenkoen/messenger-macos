@@ -68,6 +68,28 @@ struct MessengerApp: App {
                 }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
             }
+            
+            #if DEBUG
+            // Debug menu
+            CommandMenu("Debug") {
+                Button("Test Notification") {
+                    NotificationManager.shared.showNotification(
+                        title: "Test Notification",
+                        body: "This is a test message from the Debug menu."
+                    )
+                }
+                
+                Button("Force Scrape") {
+                    print("[Debug] Forcing scraper execution")
+                    WebViewStore.shared.webView?.evaluateJavaScript(WebView.getScraperJS(), completionHandler: nil)
+                }
+                
+                Button("Dump HTML") {
+                    print("[Debug] Dumping HTML structure")
+                    WebViewStore.shared.webView?.evaluateJavaScript(WebView.getDebugInspectorJS(), completionHandler: nil)
+                }
+            }
+            #endif
         }
     }
 }

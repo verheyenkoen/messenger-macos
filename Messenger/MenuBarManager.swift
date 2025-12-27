@@ -10,7 +10,9 @@ class MenuBarManager: NSObject, ObservableObject {
 
     private override init() {
         super.init()
+        #if DEBUG
         print("[MenuBar] Initializing MenuBarManager")
+        #endif
         setupStatusItem()
     }
 
@@ -28,6 +30,7 @@ class MenuBarManager: NSObject, ObservableObject {
     }
 
     private var floatingMenuItem: NSMenuItem?
+    private var filterMenuItem: NSMenuItem?
     private var contextMenu: NSMenu?
 
     private func setupMenu() {
@@ -40,6 +43,9 @@ class MenuBarManager: NSObject, ObservableObject {
 
         floatingMenuItem = NSMenuItem(title: String(localized: "menu.alwaysOnTop"), action: #selector(toggleFloating), keyEquivalent: "")
         menu.addItem(floatingMenuItem!)
+        
+        filterMenuItem = NSMenuItem(title: String(localized: "menu.filterMessages"), action: #selector(toggleFilter), keyEquivalent: "")
+        menu.addItem(filterMenuItem!)
 
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: String(localized: "menu.quit"), action: #selector(quit), keyEquivalent: "q"))
@@ -53,6 +59,14 @@ class MenuBarManager: NSObject, ObservableObject {
 
     @objc private func toggleFloating() {
         WindowManager.shared.toggleFloating()
+    }
+    
+    @objc private func toggleFilter() {
+        let key = "filterGroupsAndPages"
+        let current = UserDefaults.standard.bool(forKey: key)
+        UserDefaults.standard.set(!current, forKey: key)
+        // State update handled in menuWillOpen, but we can update immediately too
+        filterMenuItem?.state = !current ? .on : .off
     }
 
     private func updateIcon() {
@@ -74,7 +88,9 @@ class MenuBarManager: NSObject, ObservableObject {
 
     func updateBadge(_ count: Int) {
         DispatchQueue.main.async {
+            #if DEBUG
             print("[MenuBar] Updating badge to: \(count)")
+            #endif
             self.unreadCount = count
             self.updateIcon()
         }
@@ -82,10 +98,12 @@ class MenuBarManager: NSObject, ObservableObject {
 
     private func findMainWindow() -> NSWindow? {
         let windows = NSApp.windows
+        #if DEBUG
         print("[MenuBar] Available windows: \(windows.count)")
         for (index, window) in windows.enumerated() {
             print("[MenuBar]   Window \(index): \(window.className), level: \(window.level.rawValue), visible: \(window.isVisible)")
         }
+        #endif
 
         // Find first window that is not a status bar popup
         let mainWindow = windows.first { window in
@@ -93,61 +111,89 @@ class MenuBarManager: NSObject, ObservableObject {
             !window.className.contains("PopUp") &&
             window.contentView != nil
         }
+        #if DEBUG
         print("[MenuBar] Found main window: \(mainWindow?.className ?? "nil")")
+        #endif
         return mainWindow
     }
 
     @objc private func statusItemClicked() {
         guard let event = NSApp.currentEvent else {
+            #if DEBUG
             print("[MenuBar] statusItemClicked: no current event")
+            #endif
             return
         }
 
+        #if DEBUG
         print("[MenuBar] statusItemClicked: event type = \(event.type.rawValue)")
+        #endif
 
         if event.type == .rightMouseUp {
             // Right click - show menu
+            #if DEBUG
             print("[MenuBar] Right click - showing menu")
+            #endif
             statusItem?.menu = contextMenu
             statusItem?.button?.performClick(nil)
             statusItem?.menu = nil
         } else {
             // Left click - toggle window
+            #if DEBUG
             print("[MenuBar] Left click - toggling window")
+            #endif
             toggleWindow()
         }
     }
 
     @objc private func toggleWindow() {
+        #if DEBUG
         print("[MenuBar] toggleWindow called")
+        #endif
         if let window = findMainWindow() {
+            #if DEBUG
             print("[MenuBar] Window visible: \(window.isVisible)")
+            #endif
             if window.isVisible {
                 window.orderOut(nil)
+                #if DEBUG
                 print("[MenuBar] Window hidden")
+                #endif
             } else {
                 window.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)
+                #if DEBUG
                 print("[MenuBar] Window shown and activated")
+                #endif
             }
         } else {
+            #if DEBUG
             print("[MenuBar] ERROR: No main window found!")
+            #endif
         }
     }
 
     @objc private func showWindow() {
+        #if DEBUG
         print("[MenuBar] showWindow called")
+        #endif
         if let window = findMainWindow() {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+            #if DEBUG
             print("[MenuBar] Window shown and activated")
+            #endif
         } else {
+            #if DEBUG
             print("[MenuBar] ERROR: No main window found!")
+            #endif
         }
     }
 
     @objc private func newMessage() {
+        #if DEBUG
         print("[MenuBar] newMessage called")
+        #endif
         showWindow()
         NotificationCenter.default.post(name: .newMessageRequested, object: nil)
     }
@@ -165,5 +211,8 @@ extension MenuBarManager: NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         // Update checkmark for "Always on top"
         floatingMenuItem?.state = WindowManager.shared.isFloating ? .on : .off
+        
+        // Update checkmark for "Filter Messages"
+        filterMenuItem?.state = UserDefaults.standard.bool(forKey: "filterGroupsAndPages") ? .on : .off
     }
 }

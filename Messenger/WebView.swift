@@ -11,9 +11,10 @@ struct WebView: NSViewRepresentable {
         configuration.processPool = Self.processPool
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
 
-        // Setup user content controller for notifications
+        // Setup user content controller for notifications and logging
         let contentController = WKUserContentController()
         contentController.add(context.coordinator, name: "notificationHandler")
+        contentController.add(context.coordinator, name: "logHandler")
 
         // JavaScript to intercept web notifications
         let notificationScript = WKUserScript(
@@ -22,6 +23,15 @@ struct WebView: NSViewRepresentable {
             forMainFrameOnly: false
         )
         contentController.addUserScript(notificationScript)
+        
+        // JavaScript to pipe console.log to native
+        let logScript = WKUserScript(
+            source: Self.consoleOverrideJS,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false
+        )
+        contentController.addUserScript(logScript)
+        
         configuration.userContentController = contentController
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
@@ -48,11 +58,16 @@ struct WebView: NSViewRepresentable {
     // JavaScript to override Notification API
     private static let notificationOverrideJS = """
     (function() {
+        // We defer logging until the console override is active, or use specific prefix
+        // ...
+        
         // Store original Notification
         const OriginalNotification = window.Notification;
 
         // Override Notification constructor
         window.Notification = function(title, options) {
+            console.log("[JS-Notification] New notification created: " + title);
+
             // Send to native code
             window.webkit.messageHandlers.notificationHandler.postMessage({
                 title: title,
@@ -81,6 +96,166 @@ struct WebView: NSViewRepresentable {
     })();
     """
     
+    // JavaScript to pipe console logs to native
+    private static let consoleOverrideJS = """
+    (function() {
+        var originalLog = console.log;
+        var originalWarn = console.warn;
+        var originalError = console.error;
+
+        function formatArgs(args) {
+            return Array.from(args).map(arg => {
+                if (typeof arg === 'object') {
+                    try {
+                        return JSON.stringify(arg);
+                    } catch(e) {
+                        return String(arg);
+                    }
+                }
+                return String(arg);
+            }).join(' ');
+        }
+
+        console.log = function() {
+            var msg = formatArgs(arguments);
+            window.webkit.messageHandlers.logHandler.postMessage(msg);
+            originalLog.apply(console, arguments);
+        };
+
+        console.warn = function() {
+            var msg = "[WARN] " + formatArgs(arguments);
+            window.webkit.messageHandlers.logHandler.postMessage(msg);
+            originalWarn.apply(console, arguments);
+        };
+
+        console.error = function() {
+            var msg = "[ERROR] " + formatArgs(arguments);
+            window.webkit.messageHandlers.logHandler.postMessage(msg);
+            originalError.apply(console, arguments);
+        };
+        
+        console.log("[JS-LogBridge] Console override installed");
+    })();
+    """
+
+    // Helper to get localized scraper JS
+    static func getScraperJS() -> String {
+        let statusPhrases = String(localized: "scraper.statusPhrases")
+        let skipPhrases = String(localized: "scraper.skipPhrases")
+        
+        return """
+        (function() {
+            const localizedStatus = \"\(statusPhrases)\".split(\",\").map(s => s.trim().toLowerCase()).filter(s => s.length > 0);
+            const localizedSkip = \"\(skipPhrases)\".split(\",\").map(s => s.trim().toLowerCase()).filter(s => s.length > 0);
+            
+            // 0. Safety check
+            const url = window.location.href;
+            if (url.includes(\"login\") || url.includes(\"checkpoint\") || url.includes(\"two_step_verification\")) {
+                console.log("[JS-Scraper] On login/auth page, skipping scrape.");
+                return;
+            }
+            
+            console.log("[JS-Scraper] Attempting to scrape last message with localized phrases...");
+            
+            const selectors = ['[role="grid"]', '[aria-label="Chats"]', '[aria-label="Konverzace"]', '[role="navigation"]', 'div[data-testid="mwthreadlist-item-list"]'];
+            let container = null;
+            for (const s of selectors) {
+                container = document.querySelector(s);
+                if (container && container.innerText.length > 10) break;
+            }
+            if (!container) {
+                const fbRows = document.querySelectorAll('[role="row"], a[href*="/t/"]');
+                if (fbRows.length > 0) container = fbRows[0].parentElement;
+            }
+            if (!container) return;
+
+            const rows = container.querySelectorAll('[role="row"], a[href*="/t/"]');
+            let targetRow = null;
+            for (let i = 0; i < rows.length; i++) {
+                 if (rows[i].innerText.trim().length > 0) { targetRow = rows[i]; break; }
+            }
+            if (!targetRow) return;
+
+            let isUnread = false;
+            const allTextElements = targetRow.querySelectorAll('*');
+            for (let el of allTextElements) {
+                const style = window.getComputedStyle(el);
+                if (parseInt(style.fontWeight) >= 600) { isUnread = true; break; }
+                const label = el.getAttribute('aria-label');
+                if (label && (label.includes('unread') || label.includes('nepřečten'))) { isUnread = true; break; }
+            }
+            if (!isUnread) {
+                const rl = targetRow.getAttribute('aria-label');
+                if (rl && (rl.includes('unread') || rl.includes('nepřečten'))) isUnread = true;
+            }
+
+            console.log("[JS-Scraper] Is Top Conversation Unread? " + isUnread);
+            const lines = targetRow.innerText.split('\\n').map(s => s.trim()).filter(line => line.length > 0);
+            console.log("[JS-Scraper] Scraped data: " + JSON.stringify(lines));
+            
+            if (!isUnread) {
+                 console.log("[JS-Scraper] Top conversation is READ. Ignoring badge update (likely a Bell notification).");
+                 window.webkit.messageHandlers.notificationHandler.postMessage({ title: "IGNORE", body: "Read", tag: 'ignore_read' });
+                 return;
+            }
+
+            let senderIndex = 0;
+            while (lines.length > senderIndex && (localizedStatus.some(p => lines[senderIndex].toLowerCase().includes(p)) || lines[senderIndex].length <= 2)) {
+                senderIndex++;
+            }
+            
+            if (lines.length > senderIndex) {
+                let sender = lines[senderIndex];
+                let body = "";
+                for (let i = senderIndex + 1; i < lines.length; i++) {
+                    const line = lines[i];
+                    const low = line.toLowerCase().trim();
+                    
+                    // Skip localized phrases to ignore
+                    if (localizedSkip.some(phrase => low.includes(phrase))) continue;
+                    
+                    // Skip labels ending with colon
+                    if (line.trim().endsWith(":")) continue;
+                    
+                    // Skip separators (dots, bullets) but ALLOW emojis/short text like "Ok", "👍"
+                    if (line === "·" || line === "•" || line === "-") continue;
+                    
+                    // Skip simple timestamps (digit + unit)
+                    if (line.match(/^\\\\d+\\\\s*(min|h|d|týd|let|y|w|m)$/)) continue;
+                    
+                    body = line;
+                    break;
+                }
+                if (!body && lines.length > senderIndex + 1) body = lines[senderIndex + 1]; 
+                console.log("[JS-Scraper] Final match - Sender: " + sender + ", Body: " + body);
+                window.webkit.messageHandlers.notificationHandler.postMessage({ title: sender, body: body, tag: 'scraped_fallback' });
+            }
+        })();
+        """
+    }
+    
+    // Debug script to inspect conversation list structure
+    static func getDebugInspectorJS() -> String {
+        return """
+        (function() {
+            console.log("[JS-Inspector] Analyzing list items...");
+            const selectors = ['[role="grid"]', '[aria-label="Chats"]', '[aria-label="Konverzace"]', '[role="navigation"]'];
+            let container = null;
+            for (const selector of selectors) {
+                container = document.querySelector(selector);
+                if (container && container.innerText.length > 10) break;
+            }
+            if (!container) return;
+            const rows = container.querySelectorAll('[role="row"], a[href*="/t/"]');
+            for (let i = 0; i < Math.min(rows.length, 5); i++) {
+                const row = rows[i];
+                const text = row.innerText.split('\\n').join(' | ');
+                console.log("ROW " + i + ": " + text);
+            }
+        })();
+        """
+    }
+    
     func updateNSView(_ nsView: WKWebView, context: Context) {}
     
     func makeCoordinator() -> Coordinator {
@@ -92,6 +267,8 @@ struct WebView: NSViewRepresentable {
         private var appearanceObservation: NSKeyValueObservation?
         private var lastUnreadCount: Int = 0
         private var lastBadgeValue: String? = nil
+        private var pendingBadgeCount: Int? = nil
+        private var lastNotifiedMessage: String? = nil
         private var popupWindows: [NSWindow] = []
 
         func observeTitle(webView: WKWebView) {
@@ -113,14 +290,67 @@ struct WebView: NSViewRepresentable {
         // MARK: - WKScriptMessageHandler
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            if message.name == "logHandler" {
+                #if DEBUG
+                if let log = message.body as? String {
+                    print("[WebLog] \(log)")
+                }
+                #endif
+                return
+            }
+            
             guard message.name == "notificationHandler",
                   let body = message.body as? [String: Any],
                   let title = body["title"] as? String else {
                 return
             }
+            
+            let tag = body["tag"] as? String
+
+            // 1. Handle "ignore_read" tag FIRST (from Bell notification detection)
+            if tag == "ignore_read" {
+                #if DEBUG
+                print("[Badge] Scraper detected READ conversation. Ignoring badge update (Bell notification).")
+                #endif
+                self.pendingBadgeCount = nil
+                return
+            }
+            
+            // 2. Shared Logic: Check if sender is blocked
+            if NotificationManager.shared.isSenderBlocked(title) {
+                #if DEBUG
+                print("[Badge] Blocked content from: \(title) - ignoring badge update and notification")
+                #endif
+                // Clear pending badge count since we ignored this update
+                self.pendingBadgeCount = nil
+                return
+            }
+
+            // 3. If allowed, and we have a pending badge update, apply it now
+            if let pending = self.pendingBadgeCount {
+                NSApp.dockTile.badgeLabel = String(pending)
+                NSApp.dockTile.display()
+                MenuBarManager.shared.updateBadge(pending)
+                self.lastUnreadCount = pending
+                self.pendingBadgeCount = nil
+                #if DEBUG
+                print("[Badge] Applying delayed badge update: \(pending)")
+                #endif
+            }
 
             let notificationBody = body["body"] as? String ?? ""
-            let tag = body["tag"] as? String
+            
+            // 4. Duplicate Check
+            // If the same sender and message content comes in again, suppress the notification
+            // (This happens when bell notification triggers a re-scrape of an existing unread message)
+            let messageKey = "\(title)|\(notificationBody)"
+            if messageKey == self.lastNotifiedMessage {
+                #if DEBUG
+                print("[Notification] Suppressing duplicate notification for: \(title)")
+                #endif
+                return
+            }
+            self.lastNotifiedMessage = messageKey
 
             NotificationManager.shared.showNotification(
                 title: title,
@@ -135,11 +365,15 @@ struct WebView: NSViewRepresentable {
                     NSApp.dockTile.badgeLabel = nil
                     NSApp.dockTile.display()
                     MenuBarManager.shared.updateBadge(0)
+                    #if DEBUG
                     print("[Badge] Title is nil, clearing badge")
+                    #endif
                     return
                 }
 
+                #if DEBUG
                 print("[Badge] Title changed: \(title)")
+                #endif
 
                 // Messenger uses format "(5) Messenger" for unread messages
                 let pattern = "\\((\\d+)\\)"
@@ -151,41 +385,70 @@ struct WebView: NSViewRepresentable {
 
                     // Only update if badge value actually changed
                     guard count != self.lastBadgeValue else {
+                        #if DEBUG
                         print("[Badge] Badge unchanged, skipping update")
+                        #endif
                         return
                     }
                     self.lastBadgeValue = count
 
-                    // Send notification when unread count increases
-                    if newCount > self.lastUnreadCount {
-                        let message = newCount == 1
-                            ? String(localized: "notification.newMessage")
-                            : String(localized: "notification.unreadMessages \(newCount)")
-                        NotificationManager.shared.showNotification(
-                            title: "Messenger",
-                            body: message
-                        )
-                        print("[Badge] Sending notification: \(message)")
+                    // LOGIC CHANGE:
+                    // If filter is ON, we do NOT update badge immediately. We wait for scraper/notification.
+                    // Unless count is 0 (messages read), then we always clear.
+                    
+                    let filterEnabled = UserDefaults.standard.bool(forKey: "filterGroupsAndPages")
+                    
+                    if newCount == 0 || !filterEnabled {
+                        // Standard behavior
+                        self.lastUnreadCount = newCount
+                        self.pendingBadgeCount = nil // clear any pending
+                        NSApp.dockTile.badgeLabel = count
+                        NSApp.dockTile.display()
+                        MenuBarManager.shared.updateBadge(newCount)
+                        #if DEBUG
+                        print("[Badge] Set badge to: \(count)")
+                        #endif
+                    } else {
+                        // Filter enabled AND newCount > 0
+                        // Store pending count and WAIT for scraper
+                        self.pendingBadgeCount = newCount
+                        #if DEBUG
+                        print("[Badge] Filter ON: Deferring badge update (\(count)) until sender verified...")
+                        #endif
                     }
-                    self.lastUnreadCount = newCount
-
-                    NSApp.dockTile.badgeLabel = count
-                    NSApp.dockTile.display()
-                    MenuBarManager.shared.updateBadge(newCount)
-                    print("[Badge] Set badge to: \(count)")
+                    
+                    // Always trigger scraper if count increased, to verify sender (or as fallback for notification)
+                    // We wait a brief moment for the DOM to update
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        WebViewStore.shared.webView?.evaluateJavaScript(WebView.getScraperJS(), completionHandler: nil)
+                    }
                 } else {
-                    // Title without number (e.g. "Someone píše!") - DON'T clear badge
-                    // Only clear if title contains "Messenger" without number (meaning no unread)
-                    if title.contains("Messenger") && !title.contains("píše") {
+                    // Title without number (e.g. "Messenger", "Name Surname", "Someone is typing...")
+                    
+                    // If it contains "píše" or "typing", it's just a typing indicator.
+                    // We ignore it to prevent the badge from flickering if it was previously set.
+                    // However, if we just opened a chat, the title might be "Name" and then "Name is typing".
+                    // For safety, we only clear if it's NOT a typing indicator.
+                    
+                    let isTyping = title.lowercased().contains("píše") || title.lowercased().contains("typing")
+                    
+                    if !isTyping {
+                        // No number and not typing -> Cleared / Read
                         guard self.lastBadgeValue != nil else { return }
                         self.lastBadgeValue = nil
                         self.lastUnreadCount = 0
+                        self.pendingBadgeCount = nil
+                        self.lastNotifiedMessage = nil // Clear duplicate check history
                         NSApp.dockTile.badgeLabel = nil
                         NSApp.dockTile.display()
                         MenuBarManager.shared.updateBadge(0)
+                        #if DEBUG
                         print("[Badge] Cleared badge (no unread messages)")
+                        #endif
                     } else {
+                        #if DEBUG
                         print("[Badge] Ignoring typing indicator: \(title)")
+                        #endif
                     }
                 }
             }
@@ -299,7 +562,9 @@ struct WebView: NSViewRepresentable {
             window.makeKeyAndOrderFront(nil)
 
             popupWindows.append(window)
+            #if DEBUG
             print("[Popup] Created popup window: \(navigationAction.request.url?.absoluteString ?? "unknown")")
+            #endif
 
             return popupWebView
         }
@@ -308,7 +573,9 @@ struct WebView: NSViewRepresentable {
             if let window = webView.window {
                 window.close()
                 popupWindows.removeAll { $0 == window }
+                #if DEBUG
                 print("[Popup] Closed popup window")
+                #endif
             }
         }
 
