@@ -9,7 +9,8 @@ A lightweight native macOS wrapper for Facebook Messenger web, providing a seaml
 ## Features
 
 - **Native macOS App** - Clean wrapper using WKWebView, no Electron bloat
-- **System Notifications** - Native macOS notifications with unread message count
+- **Smart Notifications** - Shows sender name and message preview in notifications
+- **Filter Groups & Pages** - Option to filter out notifications from groups and pages
 - **Menu Bar Icon** - Quick access with unread badge counter
 - **Dock Badge** - Shows unread message count
 - **Dark/Light Mode** - Automatically syncs with macOS appearance
