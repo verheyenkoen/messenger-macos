@@ -14,7 +14,7 @@ If you just want Messenger as a standalone app without building anything:
 2. Click the three dots menu (⋮) → **Save and Share** → **Install page as app...**
 3. Done! Messenger will now open as a standalone app
 
-This native app offers additional features like menu bar icon, dock badge, and notification filtering.
+**Limitations of Chrome PWA:** No dock badge for unread count, and native macOS notifications may not work reliably. This native app solves these issues with proper dock badge, menu bar icon, and notification filtering.
 
 ## Why?
 
