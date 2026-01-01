@@ -16,6 +16,35 @@ class WebViewStore: ObservableObject {
         return url.contains("/t/") || url.contains("/e2ee/t/")
     }
 
+    /// Returns true if NOT in a conversation (external page, settings, etc.)
+    var isOnExternalPage: Bool {
+        guard let url = webView?.url ?? currentURL,
+              webView?.canGoBack == true else { return false }
+
+        let urlString = url.absoluteString
+
+        // If in a conversation, not external
+        if urlString.contains("/t/") || urlString.contains("/e2ee/t/") {
+            return false
+        }
+
+        // If in login flow, not external (don't interrupt login)
+        let lowerUrl = urlString.lowercased()
+        if lowerUrl.contains("login") || lowerUrl.contains("checkpoint") || lowerUrl.contains("oauth") {
+            return false
+        }
+
+        // If on messenger.com root (login page or main page), not external
+        if let host = url.host?.lowercased(),
+           host.contains("messenger.com"),
+           (url.path.isEmpty || url.path == "/") {
+            return false
+        }
+
+        // Everything else shows Back button
+        return true
+    }
+
     /// Returns true if there's an incoming call waiting
     var hasIncomingCall: Bool {
         incomingCallConversationID != nil

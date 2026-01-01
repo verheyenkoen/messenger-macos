@@ -69,13 +69,15 @@ struct WebView: NSViewRepresentable {
 
         // Override Notification constructor
         window.Notification = function(title, options) {
-            console.log("[JS-Notification] New notification created: " + title);
+            console.log("[JS-Notification] New notification - title: " + title);
+            console.log("[JS-Notification] Options: " + JSON.stringify(options));
 
             // Send to native code
             window.webkit.messageHandlers.notificationHandler.postMessage({
                 title: title,
                 body: options?.body || '',
-                tag: options?.tag || ''
+                tag: options?.tag || '',
+                data: options?.data ? JSON.stringify(options.data) : ''
             });
 
             // Also create original notification (for compatibility)
@@ -145,21 +147,23 @@ struct WebView: NSViewRepresentable {
     static func getScraperJS() -> String {
         let statusPhrases = String(localized: "scraper.statusPhrases")
         let skipPhrases = String(localized: "scraper.skipPhrases")
-        
+        let newMessageFallback = String(localized: "scraper.newMessageFallback")
+
         return """
         (function() {
             const localizedStatus = \"\(statusPhrases)\".split(\",\").map(s => s.trim().toLowerCase()).filter(s => s.length > 0);
             const localizedSkip = \"\(skipPhrases)\".split(\",\").map(s => s.trim().toLowerCase()).filter(s => s.length > 0);
-            
+            const fallbackText = \"\(newMessageFallback)\";
+
             // 0. Safety check
             const url = window.location.href;
             if (url.includes(\"login\") || url.includes(\"checkpoint\") || url.includes(\"two_step_verification\")) {
                 console.log("[JS-Scraper] On login/auth page, skipping scrape.");
                 return;
             }
-            
+
             console.log("[JS-Scraper] Attempting to scrape last message with localized phrases...");
-            
+
             const selectors = ['[role="grid"]', '[aria-label="Chats"]', '[aria-label="Konverzace"]', '[role="navigation"]', 'div[data-testid="mwthreadlist-item-list"]'];
             let container = null;
             for (const s of selectors) {
@@ -195,7 +199,20 @@ struct WebView: NSViewRepresentable {
             console.log("[JS-Scraper] Is Top Conversation Unread? " + isUnread);
             const lines = targetRow.innerText.split('\\n').map(s => s.trim()).filter(line => line.length > 0);
             console.log("[JS-Scraper] Scraped data: " + JSON.stringify(lines));
-            
+
+            // Try to find emoji from img alt attributes
+            const imgs = targetRow.querySelectorAll('img[alt]');
+            let emojiAlt = null;
+            for (const img of imgs) {
+                const alt = img.alt;
+                // Skip profile pictures and other non-emoji images
+                if (alt && alt.length > 0 && alt.length <= 10 && !alt.toLowerCase().includes('profile') && !alt.toLowerCase().includes('photo')) {
+                    emojiAlt = alt;
+                    console.log("[JS-Scraper] Found emoji from img alt: " + emojiAlt);
+                    break;
+                }
+            }
+
             if (!isUnread) {
                  console.log("[JS-Scraper] Top conversation is READ. Ignoring badge update (likely a Bell notification).");
                  window.webkit.messageHandlers.notificationHandler.postMessage({ title: "IGNORE", body: "Read", tag: 'ignore_read' });
@@ -206,32 +223,66 @@ struct WebView: NSViewRepresentable {
             while (lines.length > senderIndex && (localizedStatus.some(p => lines[senderIndex].toLowerCase().includes(p)) || lines[senderIndex].length <= 2)) {
                 senderIndex++;
             }
-            
+
             if (lines.length > senderIndex) {
                 let sender = lines[senderIndex];
                 let body = "";
                 for (let i = senderIndex + 1; i < lines.length; i++) {
                     const line = lines[i];
                     const low = line.toLowerCase().trim();
-                    
+
                     // Skip localized phrases to ignore
                     if (localizedSkip.some(phrase => low.includes(phrase))) continue;
-                    
+
                     // Skip labels ending with colon
                     if (line.trim().endsWith(":")) continue;
-                    
+
                     // Skip separators (dots, bullets) but ALLOW emojis/short text like "Ok", "👍"
                     if (line === "·" || line === "•" || line === "-") continue;
-                    
+
                     // Skip simple timestamps (digit + unit)
                     if (line.match(/^\\\\d+\\\\s*(min|h|d|týd|let|y|w|m)$/)) continue;
-                    
+
                     body = line;
                     break;
                 }
-                if (!body && lines.length > senderIndex + 1) body = lines[senderIndex + 1]; 
+
+                // If no body found from text, try emoji from img alt
+                if (!body && emojiAlt) {
+                    body = emojiAlt;
+                    console.log("[JS-Scraper] Using emoji as body: " + body);
+                }
+
+                // Fallback if still no body
+                if (!body || body.match(/^\\\\d+\\\\s*(min|h|d|týd|let|y|w|m)$/)) {
+                    body = fallbackText;
+                    console.log("[JS-Scraper] Using fallback text: " + body);
+                }
+
+                // Extract conversation ID - check if targetRow IS or CONTAINS the link
+                let conversationId = null;
+                let href = targetRow.getAttribute('href');  // targetRow might be the <a> itself
+                if (!href) {
+                    const link = targetRow.querySelector('a[href*="/t/"]');
+                    if (link) href = link.getAttribute('href');
+                }
+                if (!href) {
+                    // Check parent elements
+                    const parentLink = targetRow.closest('a[href*="/t/"]');
+                    if (parentLink) href = parentLink.getAttribute('href');
+                }
+                if (href) {
+                    const match = href.match(/\\/t\\/([^\\/?]+)/);  // Match any chars until / or ?
+                    if (match) {
+                        conversationId = match[1];
+                        console.log("[JS-Scraper] Extracted conversation ID: " + conversationId);
+                    }
+                } else {
+                    console.log("[JS-Scraper] WARNING: Could not find href with /t/ in targetRow");
+                }
+
                 console.log("[JS-Scraper] Final match - Sender: " + sender + ", Body: " + body);
-                window.webkit.messageHandlers.notificationHandler.postMessage({ title: sender, body: body, tag: 'scraped_fallback' });
+                window.webkit.messageHandlers.notificationHandler.postMessage({ title: sender, body: body, tag: conversationId || 'scraped_fallback' });
             }
         })();
         """
@@ -510,14 +561,20 @@ struct WebView: NSViewRepresentable {
         }
         
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-            // Open external links in default browser
+            // Open external links in browser
             if let url = navigationAction.request.url,
                navigationAction.navigationType == .linkActivated,
-               let host = url.host,
-               !host.contains("messenger.com") && !host.contains("facebook.com") {
-                NSWorkspace.shared.open(url)
-                decisionHandler(.cancel)
-                return
+               let host = url.host {
+
+                // l.messenger.com/l.facebook.com are redirect services
+                let isRedirect = host == "l.messenger.com" || host == "l.facebook.com"
+                let isExternal = !host.contains("messenger.com") && !host.contains("facebook.com")
+
+                if isRedirect || isExternal {
+                    openInBrowser(url: url)
+                    decisionHandler(.cancel)
+                    return
+                }
             }
             decisionHandler(.allow)
         }
@@ -600,51 +657,62 @@ struct WebView: NSViewRepresentable {
                      for navigationAction: WKNavigationAction,
                      windowFeatures: WKWindowFeatures) -> WKWebView? {
 
-            // ALWAYS log popup URL for debugging
-            let originalUrl = navigationAction.request.url?.absoluteString ?? "nil"
-            let urlLower = originalUrl.lowercased()
-            let decodedUrl = originalUrl.removingPercentEncoding ?? originalUrl
-            let decodedLower = decodedUrl.lowercased()
+            guard let url = navigationAction.request.url else { return nil }
 
+            let urlString = url.absoluteString
+            let urlLower = urlString.lowercased()
+            let host = url.host?.lowercased() ?? ""
+
+            #if DEBUG
             print("[Popup] ========== POPUP REQUEST ==========")
-            print("[Popup] Original URL: \(originalUrl)")
-            print("[Popup] Decoded URL: \(decodedUrl)")
+            print("[Popup] URL: \(urlString)")
+            print("[Popup] Host: \(host)")
+            #endif
 
-            // Check if this is a call-related popup or browser suggestion
-            // Direct call URLs
+            // Check if this is a call-related URL
             let isCallUrl = urlLower.contains("/calls/") ||
                             urlLower.contains("/groupcall/") ||
                             urlLower.contains("/call/") ||
                             urlLower.contains("rtc") ||
                             urlLower.contains("webrtc")
 
-            // Browser download suggestions (FB says "your browser doesn't support calls, download Safari/Chrome")
-            let isBrowserSuggestion = urlLower.contains("l.messenger.com") &&
-                                      (urlLower.contains("apple.com") || urlLower.contains("google.com"))
-
-            // Also check decoded URL
-            let isDecodedBrowserSuggestion = decodedLower.contains("l.messenger.com") &&
-                                              (decodedLower.contains("apple.com") || decodedLower.contains("google.com"))
-
-            print("[Popup] isCallUrl: \(isCallUrl)")
-            print("[Popup] isBrowserSuggestion: \(isBrowserSuggestion)")
-            print("[Popup] isDecodedBrowserSuggestion: \(isDecodedBrowserSuggestion)")
-            print("[Popup] =====================================")
-
-            if isCallUrl || isBrowserSuggestion || isDecodedBrowserSuggestion {
-                print("[Popup] >>> DETECTED AS CALL - showing alert")
+            if isCallUrl {
+                #if DEBUG
+                print("[Popup] >>> CALL URL - showing alert")
+                #endif
                 DispatchQueue.main.async {
                     self.showCallAlert()
                 }
-                return nil  // Don't create the broken popup
+                return nil
             }
 
-            print("[Popup] >>> NOT detected as call - creating popup window")
+            // l.messenger.com is a redirect service - open in browser
+            let isRedirectLink = host == "l.messenger.com" || host == "l.facebook.com"
 
-            // Normal popup - create WebView
+            // External links (not messenger/facebook) - open in browser
+            let isExternal = !host.contains("messenger.com") && !host.contains("facebook.com")
+
+            if isRedirectLink || isExternal {
+                #if DEBUG
+                print("[Popup] >>> EXTERNAL/REDIRECT - opening in browser")
+                #endif
+                openInBrowser(url: url)
+                return nil
+            }
+
+            // Facebook/Messenger internal popup - create with shared session
+            #if DEBUG
+            print("[Popup] >>> INTERNAL FB/MESSENGER - creating popup with shared session")
+            #endif
+
+            // IMPORTANT: Use shared processPool and dataStore for session sharing
+            configuration.processPool = WebView.processPool
+            configuration.websiteDataStore = .default()
+
             let popupWebView = WKWebView(frame: .zero, configuration: configuration)
             popupWebView.navigationDelegate = self
             popupWebView.uiDelegate = self
+            popupWebView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
 
             // Determine window size
             let width = windowFeatures.width?.doubleValue ?? 800
@@ -663,11 +731,27 @@ struct WebView: NSViewRepresentable {
             window.makeKeyAndOrderFront(nil)
 
             popupWindows.append(window)
-            #if DEBUG
-            print("[Popup] Created popup window: \(navigationAction.request.url?.absoluteString ?? "unknown")")
-            #endif
 
             return popupWebView
+        }
+
+        /// Open URL in browser (Chrome if "Open calls in Chrome" is enabled, otherwise default)
+        private func openInBrowser(url: URL) {
+            let useChrome = UserDefaults.standard.bool(forKey: "openCallsInChrome")
+
+            if useChrome {
+                // Try to open in Chrome
+                let chromeUrl = "googlechrome://\(url.absoluteString.replacingOccurrences(of: "https://", with: "").replacingOccurrences(of: "http://", with: ""))"
+                if let chromeURL = URL(string: chromeUrl) {
+                    if NSWorkspace.shared.urlForApplication(toOpen: chromeURL) != nil {
+                        NSWorkspace.shared.open(chromeURL)
+                        return
+                    }
+                }
+            }
+
+            // Fallback to default browser
+            NSWorkspace.shared.open(url)
         }
 
         private func showCallAlert() {
@@ -784,6 +868,57 @@ struct WebView: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
             DownloadManager.shared.startDownload(download)
+        }
+
+        // MARK: - Error Recovery & Auto-Reconnect
+
+        /// Called when the web content process terminates (crash or memory pressure)
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            #if DEBUG
+            print("[WebView] WebContent process terminated - reloading...")
+            #endif
+            // Reload the page to recover
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                webView.reload()
+            }
+        }
+
+        /// Called when navigation fails before the page starts loading
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            let nsError = error as NSError
+
+            // Ignore cancelled requests (user navigated away)
+            if nsError.code == NSURLErrorCancelled { return }
+
+            #if DEBUG
+            print("[WebView] Provisional navigation failed: \(error.localizedDescription)")
+            #endif
+
+            // Retry after a short delay for network errors
+            if nsError.domain == NSURLErrorDomain {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    webView.reload()
+                }
+            }
+        }
+
+        /// Called when navigation fails after the page started loading
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            let nsError = error as NSError
+
+            // Ignore cancelled requests
+            if nsError.code == NSURLErrorCancelled { return }
+
+            #if DEBUG
+            print("[WebView] Navigation failed: \(error.localizedDescription)")
+            #endif
+
+            // Retry for network errors
+            if nsError.domain == NSURLErrorDomain {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    webView.reload()
+                }
+            }
         }
     }
 }

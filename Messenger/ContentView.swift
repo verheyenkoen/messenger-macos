@@ -4,28 +4,49 @@ struct ContentView: View {
     @ObservedObject private var webViewStore = WebViewStore.shared
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
+        ZStack {
             WebView()
                 .frame(minWidth: 400, minHeight: 600)
 
-            // Floating buttons
-            VStack(spacing: 8) {
-                // Accept incoming call button (green, prominent)
-                if webViewStore.hasIncomingCall {
-                    AcceptCallButton {
-                        webViewStore.acceptCallInChrome()
+            // Back button (top-left) - shown when on external FB page
+            if webViewStore.isOnExternalPage {
+                VStack {
+                    HStack {
+                        BackButton {
+                            webViewStore.goBack()
+                        }
+                        .padding(.top, 60)
+                        .padding(.leading, 16)
+                        Spacer()
                     }
-                }
-
-                // Open in Chrome button (when in conversation)
-                if webViewStore.isInConversation {
-                    CallButton {
-                        webViewStore.openInChrome()
-                    }
+                    Spacer()
                 }
             }
-            .padding(.top, 60)
-            .padding(.trailing, 16)
+
+            // Call buttons (top-right)
+            VStack {
+                HStack {
+                    Spacer()
+                    VStack(spacing: 8) {
+                        // Accept incoming call button (green, prominent)
+                        if webViewStore.hasIncomingCall {
+                            AcceptCallButton {
+                                webViewStore.acceptCallInChrome()
+                            }
+                        }
+
+                        // Open in Chrome button (when in conversation)
+                        if webViewStore.isInConversation {
+                            CallButton {
+                                webViewStore.openInChrome()
+                            }
+                        }
+                    }
+                    .padding(.top, 60)
+                    .padding(.trailing, 16)
+                }
+                Spacer()
+            }
         }
     }
 }
@@ -72,5 +93,30 @@ struct AcceptCallButton: View {
         }
         .buttonStyle(.plain)
         .help(String(localized: "call.acceptInChrome"))
+    }
+}
+
+// MARK: - Back Button (for returning from external pages)
+
+struct BackButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 14, weight: .semibold))
+                Text(String(localized: "menu.back"))
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            .foregroundColor(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color.gray.opacity(0.8))
+            .clipShape(Capsule())
+            .shadow(color: .black.opacity(0.3), radius: 4, x: 0, y: 2)
+        }
+        .buttonStyle(.plain)
+        .help(String(localized: "menu.back"))
     }
 }

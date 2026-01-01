@@ -97,12 +97,12 @@ struct MessengerApp: App {
 class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var menuBarManager: MenuBarManager?
     static let lastURLKey = "lastMessengerURL"
+    static let windowFrameKey = "windowFrame"
 
     func applicationWillFinishLaunching(_ notification: Notification) {
-        // Set autosave name BEFORE window is shown to prevent position jump
+        // Set window delegate (SwiftUI handles autosave name via Window id)
         DispatchQueue.main.async {
             if let window = NSApp.windows.first(where: { !$0.className.contains("NSStatusBar") }) {
-                window.setFrameAutosaveName("MainWindow")
                 window.delegate = self
             }
         }
@@ -114,6 +114,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         // Apply window settings (floating etc.)
         WindowManager.shared.applyInitialSettings()
+
+        // Restore window position
+        restoreWindowFrame()
 
         // Request notification permissions
         NotificationManager.shared.requestAuthorization()
@@ -142,6 +145,31 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return false
     }
 
+    func windowDidMove(_ notification: Notification) {
+        saveWindowFrame()
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        saveWindowFrame()
+    }
+
+    // MARK: - Window Frame Persistence
+
+    private func saveWindowFrame() {
+        guard let window = NSApp.windows.first(where: { !$0.className.contains("NSStatusBar") }) else { return }
+        let frame = window.frame
+        UserDefaults.standard.set(NSStringFromRect(frame), forKey: Self.windowFrameKey)
+    }
+
+    private func restoreWindowFrame() {
+        guard let frameString = UserDefaults.standard.string(forKey: Self.windowFrameKey),
+              let window = NSApp.windows.first(where: { !$0.className.contains("NSStatusBar") }) else { return }
+        let frame = NSRectFromString(frameString)
+        if frame != .zero && frame.width > 100 && frame.height > 100 {
+            window.setFrame(frame, display: true)
+        }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         // Save current URL before termination
         saveCurrentURL()
@@ -155,10 +183,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // MARK: - URL Persistence
 
     private func saveCurrentURL() {
-        if let url = WebViewStore.shared.webView?.url?.absoluteString {
-            UserDefaults.standard.set(url, forKey: Self.lastURLKey)
-            UserDefaults.standard.synchronize()
+        guard let url = WebViewStore.shared.webView?.url,
+              let host = url.host?.lowercased(),
+              host.contains("messenger.com") || host.contains("facebook.com") else {
+            return  // Don't save non-Messenger URLs
         }
+        UserDefaults.standard.set(url.absoluteString, forKey: Self.lastURLKey)
+        UserDefaults.standard.synchronize()
     }
 
     static func getLastURL() -> URL {

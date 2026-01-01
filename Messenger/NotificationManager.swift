@@ -214,9 +214,29 @@ extension NotificationManager: UNUserNotificationCenterDelegate {
     }
 
     private func openConversation(id: String) {
+        // Skip navigation for internal tags (not real conversation IDs)
+        let internalTags = ["scraped_fallback", "ignore_read"]
+        guard !internalTags.contains(id) else {
+            #if DEBUG
+            print("[Notification] Skipping navigation for internal tag: \(id)")
+            #endif
+            return
+        }
+
+        // Use SPA-friendly navigation: click on sidebar link instead of changing URL
         let js = """
         (function() {
+            // Find conversation link in sidebar and click it (SPA navigation, no reload)
+            const link = document.querySelector('a[href*="/t/\(id)"]');
+            if (link) {
+                console.log("[JS-Nav] Found sidebar link, clicking for SPA navigation");
+                link.click();
+                return true;
+            }
+            // Fallback: change URL (causes reload but works)
+            console.log("[JS-Nav] Sidebar link not found, falling back to URL change");
             window.location.href = 'https://www.messenger.com/t/\(id)';
+            return false;
         })()
         """
         WebViewStore.shared.webView?.evaluateJavaScript(js, completionHandler: nil)
