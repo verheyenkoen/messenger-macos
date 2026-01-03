@@ -32,7 +32,7 @@ If you just want Messenger as a standalone app without building anything:
 - **Dock Badge** - Shows unread message count
 - **Dark/Light Mode** - Automatically syncs with macOS appearance
 - **Do Not Disturb** - Respects macOS Focus mode
-- **Facebook Links** - Open shared reels and posts directly in the app with back button navigation
+- **Facebook Links** - Shared reels and posts open in a popup window with shared login session
 
 ### Calls (Video & Audio)
 

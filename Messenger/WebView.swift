@@ -561,10 +561,21 @@ struct WebView: NSViewRepresentable {
         }
         
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-            // Open external links in browser
+            // Handle link clicks
             if let url = navigationAction.request.url,
                navigationAction.navigationType == .linkActivated,
                let host = url.host {
+
+                // Facebook share/reel links - open in popup with shared session
+                if host.contains("facebook.com"),
+                   (url.path.contains("/share/") || url.path.contains("/reel/")) {
+                    #if DEBUG
+                    print("[Nav] Opening share/reel link in popup: \(url)")
+                    #endif
+                    openInPopup(url: url)
+                    decisionHandler(.cancel)
+                    return
+                }
 
                 // l.messenger.com/l.facebook.com are redirect services
                 let isRedirect = host == "l.messenger.com" || host == "l.facebook.com"
@@ -700,12 +711,71 @@ struct WebView: NSViewRepresentable {
                 return nil
             }
 
-            // Facebook/Messenger internal link - navigate in same window (user can use back button)
+            // Facebook/Messenger internal popup - create with shared session
             #if DEBUG
-            print("[Popup] >>> INTERNAL FB/MESSENGER - navigating in main webview")
+            print("[Popup] >>> INTERNAL FB/MESSENGER - creating popup with shared session")
             #endif
-            WebViewStore.shared.webView?.load(URLRequest(url: url))
-            return nil
+
+            // IMPORTANT: Use shared processPool and dataStore for session sharing
+            configuration.processPool = WebView.processPool
+            configuration.websiteDataStore = .default()
+
+            let popupWebView = WKWebView(frame: .zero, configuration: configuration)
+            popupWebView.navigationDelegate = self
+            popupWebView.uiDelegate = self
+            popupWebView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+
+            // Determine window size
+            let width = windowFeatures.width?.doubleValue ?? 800
+            let height = windowFeatures.height?.doubleValue ?? 600
+
+            // Create window
+            let window = NSWindow(
+                contentRect: NSRect(x: 100, y: 100, width: width, height: height),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.contentView = popupWebView
+            window.title = "Facebook"
+            window.center()
+            window.makeKeyAndOrderFront(nil)
+
+            popupWindows.append(window)
+
+            return popupWebView
+        }
+
+        /// Open URL in a popup window with shared session
+        private func openInPopup(url: URL) {
+            let configuration = WKWebViewConfiguration()
+            configuration.processPool = WebView.processPool
+            configuration.websiteDataStore = .default()
+            configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
+
+            let popupWebView = WKWebView(frame: .zero, configuration: configuration)
+            popupWebView.navigationDelegate = self
+            popupWebView.uiDelegate = self
+            popupWebView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+
+            let window = NSWindow(
+                contentRect: NSRect(x: 100, y: 100, width: 800, height: 600),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.contentView = popupWebView
+            window.title = "Facebook"
+            window.center()
+            window.makeKeyAndOrderFront(nil)
+
+            popupWindows.append(window)
+
+            popupWebView.load(URLRequest(url: url))
+
+            #if DEBUG
+            print("[Popup] Created popup window for: \(url)")
+            #endif
         }
 
         /// Open URL in browser (Chrome if "Open calls in Chrome" is enabled, otherwise default)
