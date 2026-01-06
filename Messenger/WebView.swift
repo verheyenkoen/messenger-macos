@@ -1,5 +1,6 @@
 import SwiftUI
 import WebKit
+import Network
 
 struct WebView: NSViewRepresentable {
     // Shared process pool ensures session persistence across WebView recreations
@@ -50,6 +51,9 @@ struct WebView: NSViewRepresentable {
 
         // Observe system appearance changes for dark/light mode
         context.coordinator.observeAppearanceChanges(webView: webView)
+
+        // Start network monitoring for auto-reconnect after sleep
+        context.coordinator.startNetworkMonitoring(webView: webView)
 
         // Load last URL or default to facebook.com/messages
         let url = AppDelegate.getLastURL()
@@ -327,6 +331,9 @@ struct WebView: NSViewRepresentable {
         private var popupWindows: [NSWindow] = []
         private var lastCallAlertTitle: String? = nil  // Track to avoid duplicate call alerts
         private var callResetTimer: DispatchWorkItem? = nil  // Timer to reset call tracking
+        private let networkMonitor = NWPathMonitor()
+        private var wasDisconnected = false
+        private var lastReconnectReload: Date? = nil
 
         func observeTitle(webView: WKWebView) {
             titleObservation = webView.observe(\.title, options: [.new]) { [weak self] _, change in
@@ -385,6 +392,51 @@ struct WebView: NSViewRepresentable {
             }
         }
 
+        // MARK: - Network Monitoring (Auto-reconnect after sleep)
+
+        func startNetworkMonitoring(webView: WKWebView) {
+            networkMonitor.pathUpdateHandler = { [weak self, weak webView] path in
+                guard let self = self, let webView = webView else { return }
+
+                if path.status == .satisfied {
+                    // Network is available
+                    if self.wasDisconnected {
+                        // Throttle: don't reload if we reloaded recently (within 30 seconds)
+                        if let lastReload = self.lastReconnectReload,
+                           Date().timeIntervalSince(lastReload) < 30 {
+                            #if DEBUG
+                            print("[Network] Reconnected but skipping reload (throttled)")
+                            #endif
+                            self.wasDisconnected = false
+                            return
+                        }
+
+                        #if DEBUG
+                        print("[Network] Reconnected - will reload page in 3 seconds...")
+                        #endif
+
+                        // Wait 3 seconds for network to stabilize before reloading
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+                            guard let self = self else { return }
+                            self.lastReconnectReload = Date()
+                            #if DEBUG
+                            print("[Network] Reloading page now")
+                            #endif
+                            webView.reload()
+                        }
+                        self.wasDisconnected = false
+                    }
+                } else {
+                    // Network lost
+                    #if DEBUG
+                    print("[Network] Connection lost")
+                    #endif
+                    self.wasDisconnected = true
+                }
+            }
+            networkMonitor.start(queue: DispatchQueue.global(qos: .background))
+        }
+
         // MARK: - WKScriptMessageHandler
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -418,9 +470,15 @@ struct WebView: NSViewRepresentable {
             // 1. Handle "ignore_read" tag FIRST (from Bell notification detection)
             if tag == "ignore_read" {
                 #if DEBUG
-                print("[Badge] Scraper detected READ conversation. Ignoring badge update (Bell notification).")
+                print("[Badge] Scraper detected READ conversation. Clearing badge (Bell notification).")
                 #endif
                 self.pendingBadgeCount = nil
+                // Also clear the actual badge - it was a Bell notification, not a message
+                self.lastBadgeValue = nil
+                self.lastUnreadCount = 0
+                NSApp.dockTile.badgeLabel = nil
+                NSApp.dockTile.display()
+                MenuBarManager.shared.updateBadge(0)
                 return
             }
             
@@ -937,12 +995,7 @@ struct WebView: NSViewRepresentable {
             print("[WebView] Provisional navigation failed: \(error.localizedDescription)")
             #endif
 
-            // Retry after a short delay for network errors
-            if nsError.domain == NSURLErrorDomain {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                    webView.reload()
-                }
-            }
+            // Network monitor will handle reconnection - no auto-reload here
         }
 
         /// Called when navigation fails after the page started loading
@@ -956,12 +1009,7 @@ struct WebView: NSViewRepresentable {
             print("[WebView] Navigation failed: \(error.localizedDescription)")
             #endif
 
-            // Retry for network errors
-            if nsError.domain == NSURLErrorDomain {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                    webView.reload()
-                }
-            }
+            // Network monitor will handle reconnection - no auto-reload here
         }
     }
 }
