@@ -108,10 +108,14 @@ class NotificationManager: NSObject, ObservableObject {
             print("[Notification] Passed filter: \(title)")
             #endif
 
+            // Ensure delegate is set (in case it was cleared)
+            UNUserNotificationCenter.current().delegate = self
+
             let content = UNMutableNotificationContent()
             content.title = title
             content.body = body
             content.sound = .default
+            content.interruptionLevel = .timeSensitive  // Ensure notification breaks through
 
             // Check if this is an incoming call
             let isCall = self.isIncomingCall(title: title, body: body)
@@ -179,10 +183,10 @@ extension NotificationManager: UNUserNotificationCenterDelegate {
     // Show notification even when app is in foreground
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         #if DEBUG
-        print("[Notification] willPresent called")
+        print("[Notification] willPresent called - showing banner")
         #endif
-        // Always show banner and sound, even if app is active
-        completionHandler([.banner, .sound])
+        // Always show banner, sound, and add to notification list
+        completionHandler([.banner, .sound, .list, .badge])
     }
 
     // Handle notification click or action

@@ -188,6 +188,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
               host.contains("messenger.com") || host.contains("facebook.com") else {
             return  // Don't save non-Messenger URLs
         }
+        // Don't save E2EE URLs - they cause crashes in WKWebView
+        if url.path.contains("/e2ee/") {
+            return
+        }
         UserDefaults.standard.set(url.absoluteString, forKey: Self.lastURLKey)
         UserDefaults.standard.synchronize()
     }
@@ -196,6 +200,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let urlString = UserDefaults.standard.string(forKey: lastURLKey),
            let url = URL(string: urlString),
            url.host?.contains("messenger.com") == true || url.host?.contains("facebook.com") == true {
+            // Don't restore E2EE URLs - they cause crashes
+            if url.path.contains("/e2ee/") {
+                return URL(string: "https://www.facebook.com/messages")!
+            }
             return url
         }
         return URL(string: "https://www.facebook.com/messages")!

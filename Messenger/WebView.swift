@@ -152,11 +152,13 @@ struct WebView: NSViewRepresentable {
         let statusPhrases = String(localized: "scraper.statusPhrases")
         let skipPhrases = String(localized: "scraper.skipPhrases")
         let newMessageFallback = String(localized: "scraper.newMessageFallback")
+        let outgoingPrefixes = String(localized: "scraper.outgoingPrefixes")
 
         return """
         (function() {
             const localizedStatus = \"\(statusPhrases)\".split(\",\").map(s => s.trim().toLowerCase()).filter(s => s.length > 0);
             const localizedSkip = \"\(skipPhrases)\".split(\",\").map(s => s.trim().toLowerCase()).filter(s => s.length > 0);
+            const outgoingPrefixes = \"\(outgoingPrefixes)\".split(\",\").map(s => s.trim().toLowerCase()).filter(s => s.length > 0);
             const fallbackText = \"\(newMessageFallback)\";
 
             // 0. Safety check
@@ -166,8 +168,9 @@ struct WebView: NSViewRepresentable {
                 return;
             }
 
-            console.log("[JS-Scraper] Attempting to scrape last message with localized phrases...");
+            console.log("[JS-Scraper] Scanning conversations for unread messages...");
 
+            // Find conversation container
             const selectors = ['[role="grid"]', '[aria-label="Chats"]', '[aria-label="Konverzace"]', '[role="navigation"]', 'div[data-testid="mwthreadlist-item-list"]'];
             let container = null;
             for (const s of selectors) {
@@ -178,61 +181,76 @@ struct WebView: NSViewRepresentable {
                 const fbRows = document.querySelectorAll('[role="row"], a[href*="/t/"]');
                 if (fbRows.length > 0) container = fbRows[0].parentElement;
             }
-            if (!container) return;
+            if (!container) {
+                console.log("[JS-Scraper] No conversation container found. Cannot verify badge.");
+                window.webkit.messageHandlers.notificationHandler.postMessage({ title: "IGNORE", body: "NoContainer", tag: 'ignore_read' });
+                return;
+            }
 
             const rows = container.querySelectorAll('[role="row"], a[href*="/t/"]');
-            let targetRow = null;
-            for (let i = 0; i < rows.length; i++) {
-                 if (rows[i].innerText.trim().length > 0) { targetRow = rows[i]; break; }
-            }
-            if (!targetRow) return;
 
-            let isUnread = false;
-            const allTextElements = targetRow.querySelectorAll('*');
-            for (let el of allTextElements) {
-                const style = window.getComputedStyle(el);
-                if (parseInt(style.fontWeight) >= 600) { isUnread = true; break; }
-                const label = el.getAttribute('aria-label');
-                if (label && (label.includes('unread') || label.includes('nepřečten'))) { isUnread = true; break; }
-            }
-            if (!isUnread) {
-                const rl = targetRow.getAttribute('aria-label');
-                if (rl && (rl.includes('unread') || rl.includes('nepřečten'))) isUnread = true;
-            }
-
-            console.log("[JS-Scraper] Is Top Conversation Unread? " + isUnread);
-            const lines = targetRow.innerText.split('\\n').map(s => s.trim()).filter(line => line.length > 0);
-            console.log("[JS-Scraper] Scraped data: " + JSON.stringify(lines));
-
-            // Try to find emoji from img alt attributes
-            const imgs = targetRow.querySelectorAll('img[alt]');
-            let emojiAlt = null;
-            for (const img of imgs) {
-                const alt = img.alt;
-                // Skip profile pictures and other non-emoji images
-                if (alt && alt.length > 0 && alt.length <= 10 && !alt.toLowerCase().includes('profile') && !alt.toLowerCase().includes('photo')) {
-                    emojiAlt = alt;
-                    console.log("[JS-Scraper] Found emoji from img alt: " + emojiAlt);
-                    break;
+            // Helper: Check if a row is unread (has bold text)
+            function isRowUnread(row) {
+                const textElements = row.querySelectorAll('*');
+                for (let el of textElements) {
+                    const style = window.getComputedStyle(el);
+                    if (parseInt(style.fontWeight) >= 600) return true;
+                    const label = el.getAttribute('aria-label');
+                    if (label && (label.includes('unread') || label.includes('nepřečten'))) return true;
                 }
+                const rl = row.getAttribute('aria-label');
+                if (rl && (rl.includes('unread') || rl.includes('nepřečten'))) return true;
+                return false;
             }
 
-            if (!isUnread) {
-                 console.log("[JS-Scraper] Top conversation is READ. Ignoring badge update (likely a Bell notification).");
-                 window.webkit.messageHandlers.notificationHandler.postMessage({ title: "IGNORE", body: "Read", tag: 'ignore_read' });
-                 return;
-            }
+            // MULTI-ROW: Iterate through unread rows, skip outgoing ones
+            let foundIncoming = false;
+            for (let i = 0; i < Math.min(rows.length, 10); i++) {
+                const row = rows[i];
+                if (row.innerText.trim().length === 0) continue;
+                if (!isRowUnread(row)) continue;
 
-            let senderIndex = 0;
-            while (lines.length > senderIndex && (localizedStatus.some(p => lines[senderIndex].toLowerCase().includes(p)) || lines[senderIndex].length <= 2)) {
-                senderIndex++;
-            }
+                console.log("[JS-Scraper] Checking unread conversation at row " + i);
 
-            if (lines.length > senderIndex) {
+                // Parse this row
+                const lines = row.innerText.split('\\n').map(s => s.trim()).filter(line => line.length > 0);
+                console.log("[JS-Scraper] Scraped data: " + JSON.stringify(lines));
+
+                // Extract timestamp for duplicate detection
+                let timestamp = "";
+                for (let j = lines.length - 1; j >= 0; j--) {
+                    const line = lines[j];
+                    if (line.match(/^\\d+\\s*(min|h|d|s|týd|w|m|sec)$/) ||
+                        line.includes("právě") || line.includes("just") || line.includes("now") ||
+                        line.includes("teď") || line.includes("před")) {
+                        timestamp = line;
+                        break;
+                    }
+                }
+
+                // Try to find emoji from img alt attributes
+                const imgs = row.querySelectorAll('img[alt]');
+                let emojiAlt = null;
+                for (const img of imgs) {
+                    const alt = img.alt;
+                    if (alt && alt.length > 0 && alt.length <= 10 && !alt.toLowerCase().includes('profile') && !alt.toLowerCase().includes('photo')) {
+                        emojiAlt = alt;
+                        break;
+                    }
+                }
+
+                // Find sender name (skip status phrases)
+                let senderIndex = 0;
+                while (lines.length > senderIndex && (localizedStatus.some(p => lines[senderIndex].toLowerCase().includes(p)) || lines[senderIndex].length <= 2)) {
+                    senderIndex++;
+                }
+
+                if (lines.length <= senderIndex) continue;
+
                 let sender = lines[senderIndex];
                 let body = "";
-                for (let i = senderIndex + 1; i < lines.length; i++) {
-                    const line = lines[i];
+                for (let j = senderIndex + 1; j < lines.length; j++) {
+                    const line = lines[j];
                     const low = line.toLowerCase().trim();
 
                     // Skip localized phrases to ignore
@@ -241,52 +259,69 @@ struct WebView: NSViewRepresentable {
                     // Skip labels ending with colon
                     if (line.trim().endsWith(":")) continue;
 
-                    // Skip separators (dots, bullets) but ALLOW emojis/short text like "Ok", "👍"
+                    // Skip separators
                     if (line === "·" || line === "•" || line === "-") continue;
 
-                    // Skip simple timestamps (digit + unit)
-                    if (line.match(/^\\\\d+\\\\s*(min|h|d|týd|let|y|w|m)$/)) continue;
+                    // Skip timestamps
+                    if (line.match(/^\\d+\\s*(min|h|d|týd|let|y|w|m|sec|s)$/)) continue;
+                    if (line.includes("právě") || line.includes("just") || line.includes("now")) continue;
 
                     body = line;
                     break;
                 }
 
-                // If no body found from text, try emoji from img alt
+                // Use emoji if no body found
                 if (!body && emojiAlt) {
                     body = emojiAlt;
-                    console.log("[JS-Scraper] Using emoji as body: " + body);
                 }
 
-                // Fallback if still no body
-                if (!body || body.match(/^\\\\d+\\\\s*(min|h|d|týd|let|y|w|m)$/)) {
+                // Fallback
+                if (!body || body.match(/^\\d+\\s*(min|h|d|týd|let|y|w|m)$/)) {
                     body = fallbackText;
-                    console.log("[JS-Scraper] Using fallback text: " + body);
                 }
 
-                // Extract conversation ID - check if targetRow IS or CONTAINS the link
+                // Extract conversation ID
                 let conversationId = null;
-                let href = targetRow.getAttribute('href');  // targetRow might be the <a> itself
+                let href = row.getAttribute('href');
                 if (!href) {
-                    const link = targetRow.querySelector('a[href*="/t/"]');
+                    const link = row.querySelector('a[href*="/t/"]');
                     if (link) href = link.getAttribute('href');
                 }
                 if (!href) {
-                    // Check parent elements
-                    const parentLink = targetRow.closest('a[href*="/t/"]');
+                    const parentLink = row.closest('a[href*="/t/"]');
                     if (parentLink) href = parentLink.getAttribute('href');
                 }
                 if (href) {
-                    const match = href.match(/\\/t\\/([^\\/?]+)/);  // Match any chars until / or ?
+                    const match = href.match(/\\/t\\/([^\\/?]+)/);
                     if (match) {
                         conversationId = match[1];
-                        console.log("[JS-Scraper] Extracted conversation ID: " + conversationId);
                     }
-                } else {
-                    console.log("[JS-Scraper] WARNING: Could not find href with /t/ in targetRow");
                 }
 
-                console.log("[JS-Scraper] Final match - Sender: " + sender + ", Body: " + body);
-                window.webkit.messageHandlers.notificationHandler.postMessage({ title: sender, body: body, tag: conversationId || 'scraped_fallback' });
+                // Check if outgoing message - if so, SKIP to next row instead of returning
+                const bodyLower = body.toLowerCase();
+                const isOutgoing = outgoingPrefixes.some(prefix => bodyLower.startsWith(prefix) || bodyLower.includes(prefix));
+                if (isOutgoing) {
+                    console.log("[JS-Scraper] Skipping outgoing message: " + body + ", checking next row...");
+                    continue;  // Continue to next row instead of returning!
+                }
+
+                // Found incoming message - notify and stop
+                foundIncoming = true;
+                console.log("[JS-Scraper] Final - Sender: " + sender + ", Body: " + body + ", ConvID: " + conversationId + ", Time: " + timestamp);
+                window.webkit.messageHandlers.notificationHandler.postMessage({
+                    title: sender,
+                    body: body,
+                    tag: conversationId || 'scraped_fallback',
+                    timestamp: timestamp
+                });
+                break;
+            }
+
+            // Only if NO incoming messages found in any unread row
+            if (!foundIncoming) {
+                console.log("[JS-Scraper] No incoming unread messages found. Clearing badge.");
+                window.webkit.messageHandlers.notificationHandler.postMessage({ title: "IGNORE", body: "NoIncoming", tag: 'ignore_read' });
             }
         })();
         """
@@ -327,13 +362,15 @@ struct WebView: NSViewRepresentable {
         private var lastUnreadCount: Int = 0
         private var lastBadgeValue: String? = nil
         private var pendingBadgeCount: Int? = nil
-        private var lastNotifiedMessage: String? = nil
+        private var pendingBadgeWorkItem: DispatchWorkItem? = nil
+        private var lastNotifiedConversation: (id: String, timestamp: String, body: String)? = nil
         private var popupWindows: [NSWindow] = []
         private var lastCallAlertTitle: String? = nil  // Track to avoid duplicate call alerts
         private var callResetTimer: DispatchWorkItem? = nil  // Timer to reset call tracking
         private let networkMonitor = NWPathMonitor()
         private var wasDisconnected = false
         private var lastReconnectReload: Date? = nil
+        private var crashRecoveryTimes: [Date] = []
 
         func observeTitle(webView: WKWebView) {
             titleObservation = webView.observe(\.title, options: [.new]) { [weak self] _, change in
@@ -472,6 +509,9 @@ struct WebView: NSViewRepresentable {
                 #if DEBUG
                 print("[Badge] Scraper detected READ conversation. Clearing badge (Bell notification).")
                 #endif
+                // Cancel pending badge timeout since scraper responded
+                self.pendingBadgeWorkItem?.cancel()
+                self.pendingBadgeWorkItem = nil
                 self.pendingBadgeCount = nil
                 // Also clear the actual badge - it was a Bell notification, not a message
                 self.lastBadgeValue = nil
@@ -494,6 +534,10 @@ struct WebView: NSViewRepresentable {
 
             // 3. If allowed, and we have a pending badge update, apply it now
             if let pending = self.pendingBadgeCount {
+                // Cancel timeout since scraper responded
+                self.pendingBadgeWorkItem?.cancel()
+                self.pendingBadgeWorkItem = nil
+
                 NSApp.dockTile.badgeLabel = String(pending)
                 NSApp.dockTile.display()
                 MenuBarManager.shared.updateBadge(pending)
@@ -504,17 +548,22 @@ struct WebView: NSViewRepresentable {
                 #endif
             }
 
-            // 4. Duplicate Check
-            // If the same sender and message content comes in again, suppress the notification
-            // (This happens when bell notification triggers a re-scrape of an existing unread message)
-            let messageKey = "\(title)|\(notificationBody)"
-            if messageKey == self.lastNotifiedMessage {
+            // 4. Duplicate Check - Conversation + Timestamp + Body based
+            // Same conversation with same timestamp AND same body = duplicate
+            let conversationId = tag ?? "unknown"
+            let timestamp = body["timestamp"] as? String ?? ""
+
+            if let last = self.lastNotifiedConversation,
+               last.id == conversationId,
+               last.timestamp == timestamp,
+               last.body == notificationBody,
+               !timestamp.isEmpty {
                 #if DEBUG
-                print("[Notification] Suppressing duplicate notification for: \(title)")
+                print("[Notification] Suppressing duplicate: conversation \(conversationId) with timestamp '\(timestamp)'")
                 #endif
                 return
             }
-            self.lastNotifiedMessage = messageKey
+            self.lastNotifiedConversation = (id: conversationId, timestamp: timestamp, body: notificationBody)
 
             NotificationManager.shared.showNotification(
                 title: title,
@@ -579,8 +628,24 @@ struct WebView: NSViewRepresentable {
                         #if DEBUG
                         print("[Badge] Filter ON: Deferring badge update (\(count)) until sender verified...")
                         #endif
+
+                        // Timeout: If scraper doesn't respond in 3s, apply badge anyway
+                        self.pendingBadgeWorkItem?.cancel()
+                        let workItem = DispatchWorkItem { [weak self] in
+                            guard let self = self, let pending = self.pendingBadgeCount else { return }
+                            #if DEBUG
+                            print("[Badge] Timeout: Scraper didn't respond, applying pending badge \(pending)")
+                            #endif
+                            NSApp.dockTile.badgeLabel = String(pending)
+                            NSApp.dockTile.display()
+                            MenuBarManager.shared.updateBadge(pending)
+                            self.lastUnreadCount = pending
+                            self.pendingBadgeCount = nil
+                        }
+                        self.pendingBadgeWorkItem = workItem
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: workItem)
                     }
-                    
+
                     // Always trigger scraper if count increased, to verify sender (or as fallback for notification)
                     // We wait a brief moment for the DOM to update
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
@@ -602,7 +667,7 @@ struct WebView: NSViewRepresentable {
                         self.lastBadgeValue = nil
                         self.lastUnreadCount = 0
                         self.pendingBadgeCount = nil
-                        self.lastNotifiedMessage = nil // Clear duplicate check history
+                        // Note: Don't clear lastNotifiedConversation here - it causes duplicates when title oscillates
                         NSApp.dockTile.badgeLabel = nil
                         NSApp.dockTile.display()
                         MenuBarManager.shared.updateBadge(0)
@@ -975,10 +1040,27 @@ struct WebView: NSViewRepresentable {
 
         /// Called when the web content process terminates (crash or memory pressure)
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            let now = Date()
+
+            // Remove crashes older than 30 seconds
+            crashRecoveryTimes = crashRecoveryTimes.filter { now.timeIntervalSince($0) < 30 }
+            crashRecoveryTimes.append(now)
+
             #if DEBUG
-            print("[WebView] WebContent process terminated - reloading...")
+            print("[WebView] WebContent process terminated (crash #\(crashRecoveryTimes.count) in last 30s)")
             #endif
-            // Reload the page to recover
+
+            // If more than 3 crashes in 30s, crash loop detected
+            if crashRecoveryTimes.count > 3 {
+                #if DEBUG
+                print("[WebView] Crash loop detected - navigating to safe page")
+                #endif
+                crashRecoveryTimes = []
+                webView.load(URLRequest(url: URL(string: "https://www.facebook.com/messages")!))
+                return
+            }
+
+            // Normal recovery: reload after 0.5s
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 webView.reload()
             }

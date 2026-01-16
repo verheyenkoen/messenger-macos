@@ -253,6 +253,22 @@
         }
       }
     },
+    "scraper.outgoingPrefixes" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "já:, vy:, posíláte, odeslal, odeslala, poslal, poslala"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "you:, me:, you sent, you're sending, sent a, sending a"
+          }
+        }
+      }
+    },
     "menu.search" : {
       "localizations" : {
         "cs" : {
